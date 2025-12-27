@@ -1,0 +1,78 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+logs/
+
+# Local data
+.student_exam_app/
+*.db
+*.sqlite
+
+# PyInstaller
+*.manifest
+*.spec.bak
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Evidence clips (generated during testing)
+evidence/
+*.mp4
+*.avi
+*.webm
+
+# Model files (large, download separately)
+student_app/app/ai/models/*.caffemodel
+
+# Gemini artifacts (local only)
+.gemini/

@@ -1,0 +1,31 @@
+{
+  "version": "1.0",
+  "thresholds": {
+    "TH_FREQ": 8,
+    "TH_BURST": 4,
+    "DURATION_HIGH_SECONDS": 8,
+    "T_ABSENT_SECONDS": 10,
+    "T_GAZE_SECONDS": 5,
+    "clip_upload_min_confidence": 0.6,
+    "buffer_minutes": 10,
+    "clip_padding_seconds": 5,
+    "autosave_interval_seconds": 30
+  },
+  "angles": {
+    "head_rotation_threshold_degrees": 25,
+    "gaze_away_threshold_degrees": 30
+  },
+  "features": {
+    "enable_audio_monitoring": true,
+    "enable_phone_detection": true,
+    "enable_gaze_tracking": true,
+    "enable_face_detection": true,
+    "enable_head_pose": true
+  },
+  "warnings": {
+    "first_warning_severity": 5,
+    "auto_terminate_severity": 10,
+    "max_warnings_before_terminate": 3
+  },
+  "signature": "UNSIGNED_EXAMPLE_REPLACE_IN_PRODUCTION"
+}
