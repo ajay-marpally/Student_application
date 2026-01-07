@@ -56,14 +56,16 @@ class Authenticator:
     def authenticate(
         self,
         hall_ticket: str,
-        biometric_hash: Optional[str] = None
+        biometric_hash: Optional[str] = None,
+        face_frame: Optional['np.ndarray'] = None
     ) -> AuthResult:
         """
         Authenticate a student by hall ticket.
         
         Args:
             hall_ticket: Student's hall ticket number
-            biometric_hash: Optional biometric verification hash
+            biometric_hash: Optional biometric verification hash (legacy)
+            face_frame: Optional image frame for live face verification
             
         Returns:
             AuthResult with authentication status
@@ -81,9 +83,26 @@ class Authenticator:
             
             student_id = student["id"]
             user_data = student.get("users", {})
+            photo_url = student.get("photo_url")
             
-            # Step 2: Verify biometric if provided
-            if biometric_hash:
+            # Step 2: Verify biometric (Face Match)
+            if face_frame is not None:
+                # Direct face verification using reference photo
+                if not photo_url:
+                    # Allow login if no reference photo exists yet (first time)
+                    logger.info("No reference photo found for student - skipping face check")
+                    pass
+                else:
+                    is_match, msg, distance = self._verify_frame(face_frame, photo_url)
+                    if not is_match:
+                        self._log_auth_attempt(hall_ticket, False, f"Face mismatch ({msg})")
+                        return AuthResult(
+                            success=False,
+                            error=f"Face verification failed: {msg} (Score: {distance:.2f})"
+                        )
+            
+            elif biometric_hash:
+                # Legacy hash verification
                 if not self._verify_biometric(student_id, biometric_hash):
                     self._log_auth_attempt(hall_ticket, False, "Biometric mismatch")
                     return AuthResult(
@@ -124,7 +143,7 @@ class Authenticator:
                 exam_duration=exam_data.get("duration_minutes", 60),
                 student_name=user_data.get("name", "Student"),
                 hall_ticket=hall_ticket,
-                photo_url=student.get("photo_url")  # For face verification
+                photo_url=photo_url
             )
             
         except Exception as e:
@@ -137,6 +156,34 @@ class Authenticator:
     def _verify_biometric(self, student_id: str, biometric_hash: str) -> bool:
         """Verify biometric hash matches stored value."""
         return self.client.verify_biometric(student_id, biometric_hash)
+        
+    def _verify_frame(self, frame: 'np.ndarray', photo_url: str) -> Tuple[bool, str, float]:
+        """
+        Verify that the face in the frame matches the reference photo URL.
+        Returns: (is_match, message, distance)
+        """
+        try:
+            from student_app.app.ai.face_verifier import get_face_verifier
+            
+            verifier = get_face_verifier()
+            if not verifier:
+                logger.warning("Face verification not available")
+                return True, "Library missing", 0.0
+                
+            # Load reference if not already loaded
+            if not verifier.load_reference_from_url(photo_url):
+                logger.error("Failed to load reference photo for verification")
+                return False, "Reference load failed", 1.0
+                
+            # Perform verification
+            result = verifier.verify(frame)
+            logger.info(f"Login face verification: {result.message} (Distance: {result.distance:.4f})")
+            
+            return result.is_match, result.message, result.distance
+            
+        except Exception as e:
+            logger.error(f"Error checking face frame: {e}")
+            return False, str(e), 1.0
     
     def _verify_exam_timing(self, exam_data: dict) -> Tuple[bool, str]:
         """

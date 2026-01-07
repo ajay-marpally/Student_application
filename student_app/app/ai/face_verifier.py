@@ -172,11 +172,11 @@ class FaceVerifier:
         """
         if not self._reference_loaded:
             return VerificationResult(
-                is_match=True,  # Default to match if no reference
+                is_match=False,  # Security: Fail closed if no reference exists
                 similarity=0.0,
-                distance=0.0,
+                distance=1.0,
                 confidence=0.0,
-                message="No reference loaded"
+                message="No reference photo loaded"
             )
         
         try:
@@ -188,9 +188,9 @@ class FaceVerifier:
             
             if not face_locations:
                 return VerificationResult(
-                    is_match=True,  # Can't verify without face
+                    is_match=False, # Security: Fail closed if no face in frame
                     similarity=0.0,
-                    distance=0.0,
+                    distance=1.0,
                     confidence=0.0,
                     message="No face detected in frame"
                 )
@@ -200,11 +200,11 @@ class FaceVerifier:
             
             if not face_encodings:
                 return VerificationResult(
-                    is_match=True,
+                    is_match=False, # Security: Fail closed if face can't be encoded
                     similarity=0.0,
-                    distance=0.0,
+                    distance=1.0,
                     confidence=0.0,
-                    message="Could not encode face"
+                    message="Could not encode detected face"
                 )
             
             # Compare with reference
@@ -221,7 +221,7 @@ class FaceVerifier:
             is_match = distance <= self.match_threshold
             confidence = min(1.0, max(0.0, 1.0 - (distance / 1.5)))
             
-            # Track result
+            # Track result (Only if a face was actually detected)
             self._track_result(is_match)
             
             return VerificationResult(
@@ -235,23 +235,32 @@ class FaceVerifier:
         except Exception as e:
             logger.error(f"Face verification error: {e}")
             return VerificationResult(
-                is_match=True,  # Default to match on error
+                is_match=False,  # Security: Fail closed on processing error
                 similarity=0.0,
-                distance=0.0,
+                distance=1.0,
                 confidence=0.0,
-                message=f"Verification error: {e}"
+                message=f"Verification system error: {str(e)}"
             )
     
-    def _track_result(self, is_match: bool):
-        """Track verification results for false positive reduction."""
+    def _track_result(self, is_match: Optional[bool]):
+        """
+        Track verification results for false positive reduction.
+        
+        Args:
+            is_match: Match result, or None if no face detected in frame.
+        """
         with self._lock:
             now = datetime.now()
             
+            # Use None to indicate face was absent - we don't increment/reset
+            if is_match is None:
+                return
+
             if is_match:
-                # Reset consecutive count on match
+                # Reset consecutive count on actual match
                 self._consecutive_mismatches = 0
             else:
-                # Track mismatch
+                # Track mismatch ONLY if face was present but didn't match
                 self._consecutive_mismatches += 1
                 self._mismatch_times.append(now)
     

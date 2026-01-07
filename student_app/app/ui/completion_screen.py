@@ -36,10 +36,10 @@ class StatCard(QFrame):
             QFrame {{
                 background: qlineargradient(
                     x1:0, y1:0, x2:0, y2:1,
-                    stop:0 #1e2a4a, stop:1 #16213e
+                    stop:0 #2a3a5a, stop:1 #1e2a4a
                 );
                 border-radius: 16px;
-                border: 1px solid #2a3a5a;
+                border: 1px solid #3a4a6a;
             }}
         """)
         self.setFixedSize(180, 140)
@@ -106,30 +106,31 @@ class CompletionScreen(QWidget):
                     stop:0 #00d9a5, stop:1 #00b894
                 );
                 border-radius: 16px;
-                padding: 20px;
             }
         """)
         header_layout = QVBoxLayout(self.header_frame)
+        header_layout.setContentsMargins(20, 20, 20, 20) # Reduced margins
+        header_layout.setSpacing(10) # Reduced spacing
         
         # Status icon
         self.status_icon = QLabel("✓")
-        self.status_icon.setFont(QFont("Segoe UI", 48))
+        self.status_icon.setFont(QFont("Segoe UI", 36)) # Smaller icon
         self.status_icon.setAlignment(Qt.AlignCenter)
-        self.status_icon.setStyleSheet("color: white;")
+        self.status_icon.setStyleSheet("color: #1a1a2e;") # Dark icon
         header_layout.addWidget(self.status_icon)
         
         # Status title
         self.status_title = QLabel("Exam Submitted Successfully")
-        self.status_title.setFont(QFont("Segoe UI", 28, QFont.Bold))
+        self.status_title.setFont(QFont("Segoe UI", 24, QFont.Bold)) # Smaller title
         self.status_title.setAlignment(Qt.AlignCenter)
-        self.status_title.setStyleSheet("color: white;")
+        self.status_title.setStyleSheet("color: #1a1a2e;")
         header_layout.addWidget(self.status_title)
         
         # Status subtitle
         self.status_subtitle = QLabel("Your answers have been saved and submitted.")
-        self.status_subtitle.setFont(QFont("Segoe UI", 14))
+        self.status_subtitle.setFont(QFont("Segoe UI", 14)) # Smaller subtitle
         self.status_subtitle.setAlignment(Qt.AlignCenter)
-        self.status_subtitle.setStyleSheet("color: rgba(255, 255, 255, 0.85);")
+        self.status_subtitle.setStyleSheet("color: #1a1a2e; opacity: 0.85;")
         header_layout.addWidget(self.status_subtitle)
         
         layout.addWidget(self.header_frame)

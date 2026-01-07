@@ -90,8 +90,8 @@ class TestFaceVerifier:
         not pytest.importorskip("face_recognition", reason="face_recognition not installed"),
         reason="face_recognition not available"
     )
-    def test_verify_without_reference_returns_match(self):
-        """Test verify returns match=True when no reference loaded."""
+    def test_verify_without_reference_fails(self):
+        """Test verify returns match=False when no reference loaded."""
         from student_app.app.ai.face_verifier import FaceVerifier
         import numpy as np
         
@@ -102,9 +102,30 @@ class TestFaceVerifier:
         
         result = verifier.verify(frame)
         
-        # Should default to match when no reference
-        assert result.is_match is True
-        assert "No reference loaded" in result.message
+        # Should now fail closed for security
+        assert result.is_match is False
+        assert "No reference photo loaded" in result.message
+
+    def test_verify_no_face_fails(self):
+        """Test verify returns match=False when no face detected."""
+        from student_app.app.ai.face_verifier import FaceVerifier
+        import numpy as np
+        from unittest.mock import patch
+        
+        verifier = FaceVerifier()
+        # Mock load_reference to make it ready
+        verifier._reference_loaded = True
+        verifier._reference_encoding = np.random.rand(128)
+        
+        # Create empty frame (no face)
+        frame = np.zeros((480, 640, 3), dtype=np.uint8)
+        
+        # Mock face_recognition.face_locations to return empty list
+        with patch("face_recognition.face_locations", return_value=[]):
+            result = verifier.verify(frame)
+            
+            assert result.is_match is False
+            assert "No face detected" in result.message
     
     @pytest.mark.skipif(
         not pytest.importorskip("face_recognition", reason="face_recognition not installed"),
