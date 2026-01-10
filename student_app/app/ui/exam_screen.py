@@ -5,13 +5,19 @@ MCQ exam interface with question navigation and auto-save.
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QButtonGroup, QRadioButton,
+    QFrame, QScrollArea, QButtonGroup, QRadioButton,
     QGridLayout, QMessageBox
 )
+from collections import deque
+import cv2
+import numpy as np
+import mediapipe as mp
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 
 logger = logging.getLogger(__name__)
@@ -22,143 +28,404 @@ class ProctorWorker(QThread):
     
     violation_detected = Signal(str, int)  # message, severity
     
-    def __init__(self, camera_index: int = 0, photo_url: str = None):
+    def __init__(self, attempt_id: str, student_data: Dict[str, Any], camera_index: int = 0):
         super().__init__()
+        self.attempt_id = attempt_id
+        self.student_data = student_data
         self.camera_index = camera_index
-        self.photo_url = photo_url  # Reference photo URL for face verification
         self._running = False
     
     def run(self):
         """Main proctoring loop."""
-        import cv2
-        from student_app.app.ai import (
-            get_face_detector, get_head_pose_estimator, 
-            get_gaze_tracker, get_event_classifier,
-            get_face_verifier, is_face_verification_available
-        )
-        from student_app.app.ai.event_classifier import DetectionEvent, EventType
-        from student_app.app.buffer import get_circular_buffer
-        
-        self._running = True
-        
-        # Initialize components
-        face_detector = get_face_detector()
-        head_pose = get_head_pose_estimator()
-        gaze_tracker = get_gaze_tracker()
-        classifier = get_event_classifier()
-        buffer = get_circular_buffer()
-        
-        # Initialize face verifier if available
-        face_verifier = None
-        if is_face_verification_available() and self.photo_url:
-            face_verifier = get_face_verifier()
-            if face_verifier and self.photo_url:
-                if not face_verifier.load_reference_from_url(self.photo_url):
-                    logger.warning("Could not load reference photo for face verification")
-                    face_verifier = None
-        
-        # Setup violation callback
-        def on_violation(violation):
-            self.violation_detected.emit(violation.description, violation.severity)
-        classifier.on_violation = on_violation
-        
-        # Open camera
-        cap = cv2.VideoCapture(self.camera_index)
-        if not cap.isOpened():
-            logger.error("Could not open camera for proctoring")
-            return
-        
-        logger.info("Proctoring started")
-        
-        frame_count = 0
-        while self._running:
-            ret, frame = cap.read()
-            if not ret:
-                continue
+        self.log_debug("🚀 THREAD STARTING: Attempting to initialize AI...")
+        try:
+            import cv2
+            from student_app.app.ai import (
+                get_face_detector, get_event_classifier,
+                get_face_verifier, is_face_verification_available
+            )
+            from student_app.app.ai.head_pose import get_head_pose_estimator
+            from student_app.app.ai.gaze import get_gaze_tracker
+            from student_app.app.ai.object_detector import get_object_detector
+            from student_app.app.ai.audio_monitor import get_audio_monitor
+            from student_app.app.ai.analysis_coordinator import AnalysisCoordinator
+            from student_app.app.ai.event_classifier import DetectionEvent, EventType
+            from student_app.app.buffer import get_circular_buffer
             
-            frame_count += 1
-            now = datetime.now()
+            self._running = True
             
-            # Add frame to buffer
-            buffer.add_frame(frame, now)
+            # Initialize components
+            self.log_debug("Initializing AI components...")
             
-            # Process every 3rd frame for performance
-            if frame_count % 3 != 0:
-                continue
+            face_detector = None
+            try:
+                face_detector = get_face_detector()
+            except Exception as e:
+                logger.error(f"Failed to initialize FaceDetector: {e}")
+
+            head_pose = None
+            try:
+                head_pose = get_head_pose_estimator()
+            except Exception as e:
+                logger.error(f"Failed to initialize HeadPoseEstimator: {e}")
+
+            gaze_tracker = None
+            try:
+                gaze_tracker = get_gaze_tracker()
+            except Exception as e:
+                logger.error(f"Failed to initialize GazeTracker: {e}")
+
+            object_detector = None
+            try:
+                object_detector = get_object_detector()
+            except Exception as e:
+                logger.error(f"Failed to initialize ObjectDetector: {e}")
+
+            classifier = None
+            try:
+                classifier = get_event_classifier()
+            except Exception as e:
+                logger.error(f"Failed to initialize EventClassifier: {e}")
+
+            buffer = get_circular_buffer()
+
+            # Initialize Pose Estimator for movement detection
+            pose_estimator = None
+            last_pose_landmarks = None
+            movement_buffer = deque(maxlen=3)
+            movement_threshold = 0.15
             
-            # Face detection
-            faces = face_detector.detect(frame)
+            try:
+                if hasattr(mp, 'solutions') and hasattr(mp.solutions, 'pose'):
+                    pose_estimator = mp.solutions.pose.Pose(
+                        min_detection_confidence=0.5,
+                        min_tracking_confidence=0.5
+                    )
+                    self.log_debug("Pose estimator initialized for movement detection")
+            except Exception as e:
+                logger.warning(f"Failed to initialize Pose estimator: {e}")
             
-            if len(faces) == 0:
-                classifier.add_event(DetectionEvent(
-                    event_type=EventType.FACE_ABSENT,
-                    timestamp=now,
-                    confidence=0.9
-                ))
-            elif len(faces) > 1:
-                classifier.add_event(DetectionEvent(
-                    event_type=EventType.FACE_MULTIPLE,
-                    timestamp=now,
-                    confidence=0.9,
-                    details={"count": len(faces)}
-                ))
-            else:
-                classifier.reset_face_absent()
-            
-            # Head pose
-            pose = head_pose.estimate(frame)
-            if pose:
-                if pose.is_looking_left():
-                    classifier.add_event(DetectionEvent(
-                        event_type=EventType.HEAD_LEFT,
-                        timestamp=now,
-                        confidence=pose.confidence,
-                        details={"yaw": pose.yaw}
-                    ))
-                elif pose.is_looking_right():
-                    classifier.add_event(DetectionEvent(
-                        event_type=EventType.HEAD_RIGHT,
-                        timestamp=now,
-                        confidence=pose.confidence,
-                        details={"yaw": pose.yaw}
-                    ))
-            
-            # Gaze tracking
-            gaze = gaze_tracker.track(frame)
-            if gaze and gaze.is_looking_away():
-                classifier.add_event(DetectionEvent(
-                    event_type=EventType.GAZE_AWAY,
-                    timestamp=now,
-                    confidence=gaze.confidence
-                ))
-            else:
-                classifier.reset_gaze_tracking()
-            
-            # Face verification (check every 10th frame for performance)
-            if face_verifier and frame_count % 10 == 0:
-                result = face_verifier.verify(frame)
+            # Audio Monitor with shared state
+            audio_data = {"audio_spike": False, "speech_probability": 0.0, "speech_ratio": 0.0}
+            def audio_callback(data):
+                nonlocal audio_data
+                audio_data.update(data)
                 
-                # Check if we should alert based on consecutive mismatches
-                should_alert, alert_reason = face_verifier.should_alert()
+            audio_monitor = None
+            try:
+                audio_monitor = get_audio_monitor()
+                audio_monitor.callback = audio_callback
+                audio_monitor.start()
+            except Exception as e:
+                logger.error(f"Failed to initialize AudioMonitor: {e}")
+            
+            # Coordinator for risk scoring and staged logging
+            if not self.attempt_id:
+                logger.error("No attempt_id provided to ProctorWorker! AI monitoring will be local-only.")
+            
+            coordinator = AnalysisCoordinator(self.attempt_id, self.student_data)
+            
+            # Initialize face verifier if available
+            face_verifier = None
+            photo_url = self.student_data.get("photo_url")
+            if is_face_verification_available() and photo_url:
+                face_verifier = get_face_verifier()
+                if face_verifier:
+                    if not face_verifier.load_reference_from_url(photo_url):
+                        logger.warning("Could not load reference photo for face verification")
+                        face_verifier = None
+            
+            # Setup violation callback for UI logging (Observer pattern)
+            def on_violation_listener(violation):
+                self.violation_detected.emit(violation.description, violation.severity)
+            
+            classifier.add_listener(on_violation_listener)
+            
+            # Open camera
+            self.log_debug(f"Opening camera index {self.camera_index}...")
+            cap = cv2.VideoCapture(self.camera_index)
+            if not cap.isOpened():
+                logger.error(f"Could not open camera {self.camera_index} for proctoring")
+                self.log_debug(f"FAILED to open camera {self.camera_index}")
+                return
+            
+            self.log_debug("Proctoring session started successfully")
+            
+            frame_count = 0
+            start_time = time.time()
+            fail_count = 0
+            while self._running:
+                ret, frame = cap.read()
+                if not ret:
+                    fail_count += 1
+                    if fail_count % 30 == 0:
+                        self.log_debug(f"WARNING: Camera read failed (Count: {fail_count}). Camera might be locked.")
+                    time.sleep(0.01) # constant retry loop uses high cpu text
+                    continue
                 
-                if should_alert:
-                    stats = face_verifier.get_stats()
-                    classifier.add_event(DetectionEvent(
-                        event_type=EventType.IMPERSONATION,
+                if fail_count > 0:
+                    self.log_debug(f"Camera recovered after {fail_count} failures")
+                    fail_count = 0
+                
+                frame_count += 1
+                now = datetime.now()
+                
+                # Heartbeat every 20 frames (~10s)
+                if frame_count % 20 == 0:
+                    fps = frame_count / (time.time() - start_time)
+                    self.log_debug(f"HEARTBEAT: Thread is alive. Processing @ {fps:.1f} FPS")
+                
+                # Add frame to buffer
+                buffer.add_frame(frame, now)
+                
+                # Process every 3rd frame for performance
+                if frame_count % 3 != 0:
+                    continue
+                
+                # Object detection
+                telemetry = {
+                    "gaze": {"confidence": 0.0},
+                    "head": {"yaw": 0.0, "pitch": 0.0},
+                    "objects": [],
+                    "audio": audio_data.copy()
+                }
+                
+                # Record events for this frame to pass to coordinator
+                frame_events = []
+                
+                # Movement Detection
+                if pose_estimator:
+                    try:
+                        # Convert to RGB for MediaPipe
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        pose_results = pose_estimator.process(rgb_frame)
+                        
+                        if pose_results and pose_results.pose_landmarks:
+                            current_landmarks = pose_results.pose_landmarks.landmark
+                            
+                            if last_pose_landmarks:
+                                # Calculate movement diff
+                                # Check key points: Nose(0), Shoulders(11,12), Hips(23,24)
+                                idxs = [0, 11, 12, 23, 24]
+                                diffs = []
+                                for i in idxs:
+                                    dx = current_landmarks[i].x - last_pose_landmarks[i].x
+                                    dy = current_landmarks[i].y - last_pose_landmarks[i].y
+                                    diffs.append((dx*dx + dy*dy)**0.5)
+                                
+                                avg_movement = sum(diffs) / len(diffs)
+                                
+                                movement_buffer.append(avg_movement > movement_threshold)
+                                
+                                # If 2 out of last 3 frames show excessive movement
+                                if sum(movement_buffer) >= 2:
+                                    evt = DetectionEvent(
+                                        event_type=EventType.MOTION_DETECTED,
+                                        timestamp=now,
+                                        confidence=1.0,
+                                        details={"score": avg_movement}
+                                    )
+                                    classifier.add_event(evt)
+                                    frame_events.append(evt)
+                                
+                                # DEBUG LOG: Match reference style
+                                if frame_count % 10 == 0:
+                                     self.log_debug(f"DEBUG MOVE: {avg_movement:.3f} (Thresh: {movement_threshold})")
+                                    
+                            last_pose_landmarks = current_landmarks
+                        else:
+                            last_pose_landmarks = None
+                    except Exception as e:
+                        # Don't crash thread on movement error
+                        pass
+
+                # Object detection every 15th frame (roughly 1.5s)
+                if frame_count % 15 == 0:
+                    objects = object_detector.detect(frame)
+                    for obj in objects:
+                        telemetry["objects"].append({"label": obj.label, "conf": obj.confidence})
+                        
+                        # IMMEDIATE LOG: Match reference style
+                        self.log_debug(f"DEBUG YOLO: Detected {obj.label} ({obj.confidence:.2f})")
+                        
+                        # Map internal label to EventType
+                        etype = EventType.OBJECT_DETECTED
+                        if obj.label == "phone_detected": etype = EventType.PHONE_DETECTED
+                        elif obj.label == "book_detected": etype = EventType.BOOK_DETECTED
+                        
+                        evt = DetectionEvent(
+                            event_type=etype,
+                            timestamp=now,
+                            confidence=obj.confidence
+                        )
+                        classifier.add_event(evt)
+                        frame_events.append(evt)
+
+                # Audio check
+                if audio_data.get("audio_spike"):
+                    evt = DetectionEvent(
+                        event_type=EventType.VOICE_DETECTED,
                         timestamp=now,
-                        confidence=1.0 - result.similarity,
-                        details={
-                            "similarity": result.similarity,
-                            "distance": result.distance,
-                            "consecutive_mismatches": stats["consecutive_mismatches"],
-                            "reason": alert_reason
-                        }
-                    ))
-                    # Reset tracking after alert to avoid spam
-                    face_verifier.reset_tracking()
+                        confidence=audio_data.get("speech_probability", 0.9)
+                    )
+                    classifier.add_event(evt)
+                    frame_events.append(evt)
+
+                # Face detection
+                faces = face_detector.detect(frame)
+                
+                if len(faces) == 0:
+                    evt = DetectionEvent(
+                        event_type=EventType.FACE_ABSENT,
+                        timestamp=now,
+                        confidence=0.9
+                    )
+                    classifier.add_event(evt)
+                    frame_events.append(evt)
+                elif len(faces) > 1:
+                    evt = DetectionEvent(
+                        event_type=EventType.FACE_MULTIPLE,
+                        timestamp=now,
+                        confidence=0.9,
+                        details={"count": len(faces)}
+                    )
+                    classifier.add_event(evt)
+                    frame_events.append(evt)
+                else:
+                    classifier.reset_face_absent()
+                
+                # Head pose
+                try:
+                    pose = head_pose.estimate(frame)
+                    if pose:
+                        telemetry["head"] = {"yaw": pose.yaw, "pitch": pose.pitch}
+                        
+                        # DEBUG LOG: Match reference style (Every 10 frames)
+                        if frame_count % 10 == 0:
+                             self.log_debug(f"DEBUG HEAD: Yaw={pose.yaw:.1f}, Pitch={pose.pitch:.1f}")
+
+                        if pose.is_looking_left():
+                            evt = DetectionEvent(
+                                event_type=EventType.HEAD_LEFT,
+                                timestamp=now,
+                                confidence=pose.confidence,
+                                details={"yaw": pose.yaw}
+                            )
+                            classifier.add_event(evt)
+                            frame_events.append(evt)
+                        elif pose.is_looking_right():
+                            evt = DetectionEvent(
+                                event_type=EventType.HEAD_RIGHT,
+                                timestamp=now,
+                                confidence=pose.confidence,
+                                details={"yaw": pose.yaw}
+                            )
+                            classifier.add_event(evt)
+                            frame_events.append(evt)
+                        elif pose.is_looking_up():
+                            evt = DetectionEvent(
+                                event_type=EventType.HEAD_UP,
+                                timestamp=now,
+                                confidence=pose.confidence,
+                                details={"pitch": pose.pitch}
+                            )
+                            classifier.add_event(evt)
+                            frame_events.append(evt)
+                        elif pose.is_looking_down():
+                            evt = DetectionEvent(
+                                event_type=EventType.HEAD_DOWN,
+                                timestamp=now,
+                                confidence=pose.confidence,
+                                details={"pitch": pose.pitch}
+                            )
+                            classifier.add_event(evt)
+                            frame_events.append(evt)
+                except Exception as e:
+                    logger.error(f"Error in head pose estimation: {e}")
+                
+                # Gaze tracking
+                try:
+                    gaze = gaze_tracker.track(frame)
+                    if gaze:
+                        telemetry["gaze"] = {"confidence": gaze.confidence, "away": gaze.is_looking_away()}
+                        
+                        # DEBUG LOG: Match reference style (Gaze away)
+                        if gaze.is_looking_away():
+                             self.log_debug("DEBUG GAZE: Eyes looking away!")
+
+                        if gaze.is_looking_away():
+                            evt = DetectionEvent(
+                                event_type=EventType.GAZE_AWAY,
+                                timestamp=now,
+                                confidence=gaze.confidence
+                            )
+                            classifier.add_event(evt)
+                            frame_events.append(evt)
+                    else:
+                        classifier.reset_gaze_tracking()
+                except Exception as e:
+                    logger.error(f"Error in gaze tracking: {e}")
+                
+                # Face verification
+                if face_verifier and frame_count % 30 == 0:
+                    result = face_verifier.verify(frame)
+                    should_alert, alert_reason = face_verifier.should_alert()
+                    
+                    if should_alert:
+                        stats = face_verifier.get_stats()
+                        evt = DetectionEvent(
+                            event_type=EventType.IMPERSONATION,
+                            timestamp=now,
+                            confidence=1.0 - result.similarity,
+                            details={
+                                "similarity": result.similarity,
+                                "distance": result.distance,
+                                "consecutive_mismatches": stats["consecutive_mismatches"],
+                                "reason": alert_reason
+                            }
+                        )
+                        classifier.add_event(evt)
+                        frame_events.append(evt)
+                        face_verifier.reset_tracking()
+
+                # Pass to coordinator for centralized scoring and logging
+                coordinator.process_events(frame_events, telemetry)
+                
+                # DEBUG: Print status every 15 frames for user visibility (5 seconds approx)
+                if frame_count % 15 == 0:
+                     # Calculate simple stats for display
+                     h_yaw = telemetry['head']['yaw']
+                     h_pitch = telemetry['head']['pitch']
+                     aud_prob = telemetry['audio']['speech_probability']
+                     face_n = len(faces) if 'faces' in locals() else 0
+                     self.log_debug(f"[STATUS] Head: {h_yaw:.0f}/{h_pitch:.0f} | Audio: {aud_prob:.2f} | Faces: {face_n} | Objects: {len(telemetry['objects'])}")
+            
+            audio_monitor.stop()
+            cap.release()
+            self.log_debug("Proctoring session ended normally")
+        except Exception as e:
+            logger.error(f"CRITICAL ERROR IN PROCTORING THREAD: {e}", exc_info=True)
+            self.log_debug(f"CRITICAL ERROR IN PROCTORING THREAD: {e}")
+
+    def log_debug(self, message: str):
+        """Helper to print to terminal immediately for debugging."""
+        import sys
+        from pathlib import Path
         
-        cap.release()
-        logger.info("Proctoring stopped")
+        # Print to stdout with flush
+        print(f"[{datetime.now().strftime('%H:%M:%S')}] ⚙️ {message}", flush=True)
+        sys.stdout.flush()
+        
+        # ALSO write to a dedicated debug log file
+        try:
+            # Use local logs folder in project directory
+            debug_log = Path("M:/students_app/Student_application/logs/proctor_debug.log")
+            debug_log.parent.mkdir(parents=True, exist_ok=True)
+            with open(debug_log, "a", encoding="utf-8") as f:
+                f.write(f"[{datetime.now().isoformat()}] {message}\n")
+                f.flush()
+        except:
+            pass  # Don't crash if logging fails
     
     def stop(self):
         """Stop the proctoring loop."""
@@ -399,9 +666,24 @@ class ExamScreen(QWidget):
         """
     
     def set_exam_data(self, student_data: dict):
-        """Set exam data after login."""
+        """Pass student information from login/instruction screens."""
         self.student_data = student_data
     
+    def report_focus_loss(self):
+        """Called by MainWindow when app loses focus."""
+        if hasattr(self, 'worker') and self.worker and self.worker._running:
+            from student_app.app.ai.event_classifier import get_event_classifier, DetectionEvent, EventType
+            from datetime import datetime
+            
+            classifier = get_event_classifier()
+            evt = DetectionEvent(
+                event_type=EventType.APP_SWITCH,
+                timestamp=datetime.now(),
+                confidence=1.0
+            )
+            classifier.add_event(evt)
+            logger.warning("Focus loss reported to AI classifier")
+
     def start_exam(self):
         """Start the exam session."""
         logger.info("Starting exam")
@@ -465,8 +747,7 @@ class ExamScreen(QWidget):
         
         # Start proctoring
         camera_index = self.student_data.get("camera_index", 0)
-        photo_url = self.student_data.get("photo_url")  # Reference photo for face verification
-        self._proctor_worker = ProctorWorker(camera_index, photo_url)
+        self._proctor_worker = ProctorWorker(self.attempt_id, self.student_data, camera_index)
         self._proctor_worker.violation_detected.connect(self._on_violation)
         self._proctor_worker.start()
         
@@ -664,10 +945,10 @@ class ExamScreen(QWidget):
                 description=message
             )
         
-        # Show warning for severe violations
-        if severity >= 8:
-            from student_app.app.ui.warning_overlay import show_warning_overlay
-            show_warning_overlay(self.window(), message)
+        # Show warning for severe violations (DISABLED for Silent Operation)
+        # if severity >= 8:
+        #     from student_app.app.ui.warning_overlay import show_warning_overlay
+        #     show_warning_overlay(self.window(), message)
     
     def _on_submit(self):
         """Handle submit button click."""

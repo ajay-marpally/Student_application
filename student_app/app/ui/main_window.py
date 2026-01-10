@@ -138,6 +138,10 @@ class MainWindow(QMainWindow):
             # Emit violation signal
             self.violation_detected.emit("Application focus lost")
             
+            # Report to proctoring system
+            if hasattr(self, 'exam_screen'):
+                self.exam_screen.report_focus_loss()
+            
             # Force focus back
             self.activateWindow()
             self.raise_()

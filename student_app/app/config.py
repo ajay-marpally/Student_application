@@ -42,7 +42,7 @@ class ThresholdConfig:
     
     # Evidence
     CLIP_UPLOAD_MIN_CONFIDENCE: float = 0.6
-    BUFFER_MINUTES: int = 10
+    BUFFER_MINUTES: int = 1
     CLIP_PADDING_SECONDS: float = 5.0
     
     # UI
@@ -51,6 +51,30 @@ class ThresholdConfig:
     
     # Windows
     WINDOW_CHECK_INTERVAL_MS: int = 500
+    
+    # Risk Scoring (ported from main.py)
+    RISK_BANDS: dict = field(default_factory=lambda: {
+        "low": 5,
+        "medium": 12,
+        "high": 20,
+        "critical": 90  # Keeping critical high for manual confirmation
+    })
+    VIOLATION_POINTS: dict = field(default_factory=lambda: {
+        "head_left_rotation": 40,
+        "head_right_rotation": 40,
+        "face_absent": 50,
+        "multiple_faces": 100,
+        "gaze_away": 30,
+        "phone_detected": 100,
+        "book_detected": 100,
+        "suspicious_object": 100,
+        "voice_detected": 40,
+        "multiple_voices": 80,
+        "application_switch": 50,
+        "person_swap": 100,
+        "impersonation_suspected": 100
+    })
+    RISK_DECAY_PER_SEC: float = 5.0  # Sync with main.py
 
 
 @dataclass
@@ -59,7 +83,15 @@ class SupabaseConfig:
     url: str = ""
     key: str = ""
     service_key: str = ""  # For admin operations
-    storage_bucket: str = "evidence"
+    storage_bucket: str = "students_evidences"
+
+
+@dataclass
+class GeminiConfig:
+    """Gemini API configuration"""
+    ENABLED: bool = False
+    API_KEY: str = ""
+    MODEL_NAME: str = "gemini-1.5-flash"
 
 
 @dataclass
@@ -67,6 +99,7 @@ class AppConfig:
     """Main application configuration"""
     thresholds: ThresholdConfig = field(default_factory=ThresholdConfig)
     supabase: SupabaseConfig = field(default_factory=SupabaseConfig)
+    gemini: GeminiConfig = field(default_factory=GeminiConfig)
     
     # Paths
     data_dir: Path = field(default_factory=lambda: Path.home() / ".student_exam_app")
@@ -115,6 +148,19 @@ class ConfigManager:
         
         # Camera
         self.config.camera_index = int(os.getenv("CAMERA_INDEX", "0"))
+        
+        # Gemini
+        self.config.gemini.API_KEY = os.getenv("GEMINI_API_KEY", "")
+        self.config.gemini.MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+        
+        # Auto-enable if key is provided, unless explicitly set to false
+        env_enabled = os.getenv("GEMINI_ENABLED", "").lower()
+        if env_enabled == "true":
+            self.config.gemini.ENABLED = True
+        elif env_enabled == "false":
+            self.config.gemini.ENABLED = False
+        else:
+            self.config.gemini.ENABLED = bool(self.config.gemini.API_KEY)
         
         logger.info(f"Loaded configuration: Supabase URL = {self.config.supabase.url[:30]}...")
     

@@ -7,11 +7,28 @@ Estimates head orientation (yaw, pitch, roll) using MediaPipe Face Mesh.
 import cv2
 import numpy as np
 import logging
+logger = logging.getLogger(__name__)
+
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
-import mediapipe as mp
 
-logger = logging.getLogger(__name__)
+import mediapipe as mp
+try:
+    try:
+        import mediapipe.solutions.face_mesh as mp_face_mesh
+        import mediapipe.solutions.drawing_utils as mp_drawing
+    except (ImportError, AttributeError):
+        # Fallback for versions where solutions is hidden under python
+        import mediapipe.python.solutions.face_mesh as mp_face_mesh
+        import mediapipe.python.solutions.drawing_utils as mp_drawing
+    MP_AVAILABLE = True
+except (ImportError, AttributeError):
+    MP_AVAILABLE = False
+    mp_face_mesh = None
+    mp_drawing = None
+
+if not MP_AVAILABLE:
+    logger.warning("MediaPipe solutions not found - Head pose estimation will be disabled")
 
 
 @dataclass
@@ -71,14 +88,22 @@ class HeadPoseEstimator:
             min_detection_confidence: Minimum confidence for face detection
             min_tracking_confidence: Minimum confidence for tracking
         """
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
-        )
+        self.enabled = MP_AVAILABLE
+        self.mp_face_mesh = mp_face_mesh
+        self.face_mesh = None
+        
+        if self.enabled:
+            try:
+                self.face_mesh = self.mp_face_mesh.FaceMesh(
+                    static_image_mode=False,
+                    max_num_faces=1,
+                    refine_landmarks=True,
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize MediaPipe FaceMesh: {e}")
+                self.enabled = False
         
         # Camera matrix will be computed based on frame size
         self._camera_matrix = None
@@ -113,7 +138,7 @@ class HeadPoseEstimator:
         Returns:
             HeadPose object or None if no face detected
         """
-        if frame is None or frame.size == 0:
+        if not self.enabled or frame is None or frame.size == 0:
             return None
         
         h, w = frame.shape[:2]
@@ -149,12 +174,15 @@ class HeadPoseEstimator:
         
         # Convert rotation vector to Euler angles
         rotation_matrix, _ = cv2.Rodrigues(rotation_vector)
-        pose_matrix = cv2.hconcat([rotation_matrix, translation_vector])
         
-        # Decompose projection matrix
-        _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(
-            cv2.vconcat([pose_matrix, np.array([[0, 0, 0, 1]])])
-        )
+        # Ensure consistent types and dimensions for 3x4 projection matrix
+        rotation_matrix = rotation_matrix.astype(np.float64)
+        translation_vector = translation_vector.reshape(3, 1).astype(np.float64)
+        
+        # Reference code uses np.hstack to create a 3x4 projection matrix
+        proj_matrix = np.hstack((rotation_matrix, translation_vector))
+        
+        _, _, _, _, _, _, euler_angles = cv2.decomposeProjectionMatrix(proj_matrix)
         
         yaw = euler_angles[1, 0]
         pitch = euler_angles[0, 0]
@@ -180,7 +208,7 @@ class HeadPoseEstimator:
         
         Returns list of (x, y) coordinates for all 468 landmarks.
         """
-        if frame is None or frame.size == 0:
+        if not self.enabled or frame is None or frame.size == 0:
             return None
         
         h, w = frame.shape[:2]

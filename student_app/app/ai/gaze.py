@@ -7,11 +7,24 @@ Tracks eye gaze direction using MediaPipe Face Mesh.
 import cv2
 import numpy as np
 import logging
+logger = logging.getLogger(__name__)
+
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
 import mediapipe as mp
+try:
+    try:
+        import mediapipe.solutions.face_mesh as mp_face_mesh
+    except (ImportError, AttributeError):
+        # Fallback for versions where solutions is hidden under python
+        import mediapipe.python.solutions.face_mesh as mp_face_mesh
+    MP_AVAILABLE = True
+except (ImportError, AttributeError):
+    MP_AVAILABLE = False
+    mp_face_mesh = None
 
-logger = logging.getLogger(__name__)
+if not MP_AVAILABLE:
+    logger.warning("MediaPipe solutions not found - Gaze tracking will be disabled")
 
 
 @dataclass
@@ -72,14 +85,22 @@ class GazeTracker:
             min_detection_confidence: Minimum confidence for detection
             min_tracking_confidence: Minimum confidence for tracking
         """
-        self.mp_face_mesh = mp.solutions.face_mesh
-        self.face_mesh = self.mp_face_mesh.FaceMesh(
-            static_image_mode=False,
-            max_num_faces=1,
-            refine_landmarks=True,  # Enable iris landmarks
-            min_detection_confidence=min_detection_confidence,
-            min_tracking_confidence=min_tracking_confidence
-        )
+        self.enabled = MP_AVAILABLE
+        self.mp_face_mesh = mp_face_mesh
+        self.face_mesh = None
+        
+        if self.enabled:
+            try:
+                self.face_mesh = self.mp_face_mesh.FaceMesh(
+                    static_image_mode=False,
+                    max_num_faces=1,
+                    refine_landmarks=True,  # Enable iris landmarks
+                    min_detection_confidence=min_detection_confidence,
+                    min_tracking_confidence=min_tracking_confidence
+                )
+            except Exception as e:
+                logger.error(f"Failed to initialize MediaPipe FaceMesh: {e}")
+                self.enabled = False
     
     def track(self, frame: np.ndarray) -> Optional[GazeDirection]:
         """
@@ -91,7 +112,7 @@ class GazeTracker:
         Returns:
             GazeDirection object or None if eyes not detected
         """
-        if frame is None or frame.size == 0:
+        if not self.enabled or frame is None or frame.size == 0:
             return None
         
         h, w = frame.shape[:2]
@@ -205,7 +226,7 @@ class GazeTracker:
         Returns:
             True if eyes appear closed
         """
-        if frame is None or frame.size == 0:
+        if not self.enabled or frame is None or frame.size == 0:
             return False
         
         h, w = frame.shape[:2]

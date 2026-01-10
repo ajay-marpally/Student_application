@@ -106,17 +106,12 @@ class EventClassifier:
     10. Seat swap/multiple people
     """
     
-    def __init__(
-        self,
-        on_violation: Optional[Callable[[Violation], None]] = None
-    ):
+    def __init__(self):
         """
         Initialize event classifier.
-        
-        Args:
-            on_violation: Callback when violation is detected
         """
-        self.on_violation = on_violation
+        self._lock = threading.Lock()
+        self._listeners = []
         self.config = get_config().thresholds
         
         # Event storage with thread-safe access
@@ -161,6 +156,8 @@ class EventClassifier:
         handlers = {
             EventType.HEAD_LEFT: self._handle_head_rotation,
             EventType.HEAD_RIGHT: self._handle_head_rotation,
+            EventType.HEAD_UP: self._handle_head_rotation,
+            EventType.HEAD_DOWN: self._handle_head_rotation,
             EventType.FACE_ABSENT: self._handle_face_absent,
             EventType.FACE_MULTIPLE: self._handle_multiple_faces,
             EventType.GAZE_AWAY: self._handle_gaze_away,
@@ -170,6 +167,7 @@ class EventClassifier:
             EventType.APP_SWITCH: self._handle_app_switch,
             EventType.PERSON_SWAP: self._handle_person_swap,
             EventType.IMPERSONATION: self._handle_impersonation,
+            EventType.MOTION_DETECTED: self._handle_motion_detected,
         }
         
         handler = handlers.get(event.event_type)
@@ -180,7 +178,10 @@ class EventClassifier:
     
     def _handle_head_rotation(self, event: DetectionEvent):
         """Handle head rotation events (Scenarios 1, 2, 4)."""
-        direction = "left" if event.event_type == EventType.HEAD_LEFT else "right"
+        if event.event_type == EventType.HEAD_LEFT: direction = "left"
+        elif event.event_type == EventType.HEAD_RIGHT: direction = "right"
+        elif event.event_type == EventType.HEAD_UP: direction = "up"
+        else: direction = "down"
         
         # Track ongoing rotation for duration-based detection (Scenario 2)
         if self._current_head_rotation_direction == direction:
@@ -229,7 +230,10 @@ class EventClassifier:
                 violation_type="frequent_head_rotation",
                 severity=severity,
                 description=f"{count} head rotations in 5 minutes (threshold: {self.config.TH_FREQ})",
-                events=self._get_recent_events([EventType.HEAD_LEFT, EventType.HEAD_RIGHT], window)
+                events=self._get_recent_events([
+                    EventType.HEAD_LEFT, EventType.HEAD_RIGHT, 
+                    EventType.HEAD_UP, EventType.HEAD_DOWN
+                ], window)
             )
     
     def _check_burst_violation(self, event: DetectionEvent):
@@ -248,7 +252,10 @@ class EventClassifier:
                 violation_type="burst_head_rotation",
                 severity=6,
                 description=f"{count} head rotations in 30 seconds (threshold: {self.config.TH_BURST})",
-                events=self._get_recent_events([EventType.HEAD_LEFT, EventType.HEAD_RIGHT], window)
+                events=self._get_recent_events([
+                    EventType.HEAD_LEFT, EventType.HEAD_RIGHT,
+                    EventType.HEAD_UP, EventType.HEAD_DOWN
+                ], window)
             )
     
     # ==================== Scenario 5: Face Absent/Occluded ====================
@@ -373,6 +380,17 @@ class EventClassifier:
             events=[event]
         )
     
+    # ==================== Scenario 11: Excessive Movement ====================
+
+    def _handle_motion_detected(self, event: DetectionEvent):
+        """Handle excessive movement (Scenario 11)."""
+        self._create_violation(
+            violation_type="excessive_movement",
+            severity=5,
+            description="Excessive body movement detected",
+            events=[event]
+        )
+
     # ==================== Scenario 3: Combined Patterns ====================
     
     def check_combined_patterns(self):
@@ -404,6 +422,13 @@ class EventClassifier:
                     events=[]
                 )
     
+    def add_listener(self, callback: Callable[[Violation], None]):
+        """Add a listener for violation events."""
+        with self._lock:
+            if callback not in self._listeners:
+                self._listeners.append(callback)
+                logger.debug(f"Added violation listener: {callback}")
+
     # ==================== Utility Methods ====================
     
     def _create_violation(
@@ -436,8 +461,15 @@ class EventClassifier:
         
         logger.warning(f"Violation detected: {violation_type} (severity {severity})")
         
-        if self.on_violation:
-            self.on_violation(violation)
+        # Notify listeners
+        with self._lock:
+            listeners = list(self._listeners)
+        
+        for listener in listeners:
+            try:
+                listener(violation)
+            except Exception as e:
+                logger.error(f"Error in violation listener: {e}")
     
     def _get_recent_events(
         self,

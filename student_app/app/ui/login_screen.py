@@ -54,6 +54,7 @@ class AuthWorker(QThread):
                 "exam_id": result.exam_id,
                 "exam_name": result.exam_name,
                 "exam_duration": result.exam_duration,
+                "lab_id": result.lab_id,
                 "photo_url": result.photo_url
             }
             

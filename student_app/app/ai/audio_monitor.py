@@ -1,277 +1,171 @@
 """
 Student Exam Application - AI: Audio Monitor
 
-Voice Activity Detection (VAD) and audio analysis for detecting
-speech, multiple voices, and suspicious audio patterns.
+Upgraded Audio Monitor using Silero VAD for robust speech detection.
+Ported from ai-proctoring-system/main.py.
 """
 
 import logging
 import threading
-import queue
 import time
 import numpy as np
-from typing import Optional, Callable, List
-from dataclasses import dataclass
+from typing import Optional, Callable, Dict
 from datetime import datetime
+from collections import deque
 
-logger = logging.getLogger(__name__)
+try:
+    import torch
+    from silero_vad import load_silero_vad
+    SILERO_AVAILABLE = True
+except ImportError:
+    SILERO_AVAILABLE = False
+    logging.warning("silero-vad or torch not available - Audio monitoring will be limited")
 
-# Try to import audio libraries
 try:
     import pyaudio
     PYAUDIO_AVAILABLE = True
 except ImportError:
     PYAUDIO_AVAILABLE = False
-    logger.warning("PyAudio not available - audio monitoring disabled")
+    logging.warning("PyAudio not available - Audio monitoring disabled")
 
-try:
-    import webrtcvad
-    WEBRTCVAD_AVAILABLE = True
-except ImportError:
-    WEBRTCVAD_AVAILABLE = False
-    logger.warning("webrtcvad not available - using energy-based VAD")
-
-
-@dataclass
-class AudioEvent:
-    """Represents a detected audio event."""
-    event_type: str  # "voice_start", "voice_end", "multi_voice", "suspicious"
-    timestamp: datetime
-    duration_ms: float
-    confidence: float
-    details: Optional[str] = None
-
+logger = logging.getLogger(__name__)
 
 class AudioMonitor:
-    """
-    Audio monitoring for exam proctoring.
-    
-    Detects:
-    - Voice activity (speaking during exam)
-    - Multiple voices (potential collaboration)
-    - Suspicious audio patterns
-    """
-    
-    # Audio parameters
-    SAMPLE_RATE = 16000
-    CHANNELS = 1
-    CHUNK_DURATION_MS = 30  # WebRTC VAD requires 10, 20, or 30ms
-    CHUNK_SIZE = int(SAMPLE_RATE * CHUNK_DURATION_MS / 1000)
-    FORMAT = None  # Set in __init__ based on availability
-    
-    # Detection parameters
-    ENERGY_THRESHOLD = 0.02
-    VOICE_MIN_DURATION_MS = 500  # Minimum voice duration to trigger event
-    MULTI_VOICE_THRESHOLD = 0.6
-    
-    def __init__(
-        self,
-        device_index: Optional[int] = None,
-        on_event: Optional[Callable[[AudioEvent], None]] = None
-    ):
-        """
-        Initialize audio monitor.
+    def __init__(self, callback: Optional[Callable[[Dict], None]] = None):
+        self.callback = callback
+        self.config = None
+        self.running = False
+        self.stream = None
+        self.p = None
         
-        Args:
-            device_index: Audio input device index (None for default)
-            on_event: Callback for audio events
-        """
-        self.device_index = device_index
-        self.on_event = on_event
+        self.sample_rate = 16000
+        self.chunk_size = 512
         
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._audio: Optional["pyaudio.PyAudio"] = None
-        self._stream = None
-        
-        # VAD
-        self._vad = None
-        if WEBRTCVAD_AVAILABLE:
-            self._vad = webrtcvad.Vad(2)  # Aggressiveness mode 2
-        
-        # State
-        self._voice_active = False
-        self._voice_start_time: Optional[datetime] = None
-        self._recent_voice_segments: List[float] = []
-    
-    def start(self):
-        """Start audio monitoring."""
-        if not PYAUDIO_AVAILABLE:
-            logger.warning("Cannot start audio monitor - PyAudio not available")
-            return
-        
-        if self._running:
-            return
-        
-        self._running = True
-        self._thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._thread.start()
-        logger.info("Audio monitor started")
-    
-    def stop(self):
-        """Stop audio monitoring."""
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=2.0)
-            self._thread = None
-        
-        if self._stream:
-            self._stream.stop_stream()
-            self._stream.close()
-            self._stream = None
-        
-        if self._audio:
-            self._audio.terminate()
-            self._audio = None
-        
-        logger.info("Audio monitor stopped")
-    
-    def _monitor_loop(self):
-        """Main monitoring loop."""
-        try:
-            import pyaudio
-            
-            self._audio = pyaudio.PyAudio()
-            
-            self._stream = self._audio.open(
-                format=pyaudio.paInt16,
-                channels=self.CHANNELS,
-                rate=self.SAMPLE_RATE,
-                input=True,
-                input_device_index=self.device_index,
-                frames_per_buffer=self.CHUNK_SIZE
-            )
-            
-            logger.info("Audio stream opened")
-            
-            while self._running:
-                try:
-                    # Read audio chunk
-                    data = self._stream.read(self.CHUNK_SIZE, exception_on_overflow=False)
-                    
-                    # Process chunk
-                    self._process_chunk(data)
-                    
-                except Exception as e:
-                    logger.debug(f"Audio read error: {e}")
-                    time.sleep(0.1)
-                    
-        except Exception as e:
-            logger.error(f"Audio monitor error: {e}")
-        finally:
-            if self._stream:
-                self._stream.stop_stream()
-                self._stream.close()
-            if self._audio:
-                self._audio.terminate()
-    
-    def _process_chunk(self, data: bytes):
-        """Process an audio chunk."""
-        # Convert to numpy array
-        audio = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
-        
-        # Compute RMS energy
-        energy = np.sqrt(np.mean(audio ** 2))
-        
-        # Voice activity detection
-        is_voice = False
-        
-        if self._vad:
+        self.vad_model = None
+        if SILERO_AVAILABLE:
             try:
-                is_voice = self._vad.is_speech(data, self.SAMPLE_RATE)
-            except Exception:
-                is_voice = energy > self.ENERGY_THRESHOLD
-        else:
-            is_voice = energy > self.ENERGY_THRESHOLD
-        
-        # Track voice activity
-        now = datetime.now()
-        
-        if is_voice and not self._voice_active:
-            # Voice started
-            self._voice_active = True
-            self._voice_start_time = now
+                self.vad_model = load_silero_vad()
+                logger.info("Silero VAD Loaded successfully")
+            except Exception as e:
+                logger.error(f"Failed to load Silero VAD: {e}")
+                # We don't modify the global flag here to avoid scoping issues 
+                # and because vad_model=None already indicates failure.
+                self.vad_model = None
+
+        self.speech_state = False
+        self.speech_start_ts = None
+        self.silence_start_ts = None
+        self.silence_grace_seconds = 1.0
+        self.speech_pattern_buffer = deque(maxlen=50)
+        self.sustained_speech_threshold = 0.70
+        self.suspicious_seconds = 3.0
+
+    def start(self):
+        if not PYAUDIO_AVAILABLE:
+            logger.warning("PyAudio not available - cannot start Audio Monitor")
+            return
             
-        elif not is_voice and self._voice_active:
-            # Voice ended
-            self._voice_active = False
-            
-            if self._voice_start_time:
-                duration_ms = (now - self._voice_start_time).total_seconds() * 1000
+        from student_app.app.config import get_config
+        self.config = get_config()
+        self.suspicious_seconds = 3.0 # Default
+
+        self.p = pyaudio.PyAudio()
+        self.running = True
+        
+        def _audio_callback(in_data, frame_count, time_info, status):
+            if not self.running:
+                return (None, pyaudio.paAbort)
                 
-                if duration_ms >= self.VOICE_MIN_DURATION_MS:
-                    # Significant voice detected
-                    self._recent_voice_segments.append(duration_ms)
-                    
-                    event = AudioEvent(
-                        event_type="voice_detected",
-                        timestamp=self._voice_start_time,
-                        duration_ms=duration_ms,
-                        confidence=min(1.0, energy * 10)
-                    )
-                    
-                    if self.on_event:
-                        self.on_event(event)
-        
-        # Cleanup old segments (keep last 60 seconds)
-        # This would need proper timestamp tracking in production
-    
-    def get_voice_activity_count(self, window_seconds: float = 60.0) -> int:
-        """Get count of voice activity events in recent window."""
-        return len(self._recent_voice_segments)
-    
-    def is_voice_active(self) -> bool:
-        """Check if voice is currently active."""
-        return self._voice_active
+            audio_np = np.frombuffer(in_data, dtype=np.int16).astype(np.float32)
+            if audio_np.size == 0:
+                speech_prob = 0.0
+            else:
+                audio_np /= 32768.0
+                if audio_np.size > 512:
+                    audio_np = audio_np[:512]
+                elif audio_np.size < 512:
+                    audio_np = np.pad(audio_np, (0, 512 - audio_np.size))
+                
+                if SILERO_AVAILABLE and self.vad_model:
+                    try:
+                        audio_tensor = torch.from_numpy(audio_np)
+                        speech_prob = float(self.vad_model(audio_tensor, self.sample_rate).detach())
+                    except Exception as e:
+                        logger.error(f"VAD prediction error: {e}")
+                        speech_prob = 0.0
+                else:
+                    # Fallback to energy based
+                    speech_prob = np.sqrt(np.mean(audio_np**2)) * 10
+            
+            now = time.time()
+            audio_spike = False
+            
+            if speech_prob > 0.6:
+                self.speech_pattern_buffer.append(1)
+                if not self.speech_state:
+                    self.speech_state = True
+                    self.speech_start_ts = now
+                self.silence_start_ts = None
+            else:
+                self.speech_pattern_buffer.append(0)
+                if self.speech_state:
+                    if self.silence_start_ts is None:
+                        self.silence_start_ts = now
+                    elif now - self.silence_start_ts > self.silence_grace_seconds:
+                        self.speech_state = False
+                        self.speech_start_ts = None
+                        self.silence_start_ts = None
+            
+            speech_ratio = 0.0
+            if len(self.speech_pattern_buffer) >= 40:
+                speech_ratio = sum(self.speech_pattern_buffer) / len(self.speech_pattern_buffer)
+                if speech_ratio > self.sustained_speech_threshold:
+                    if self.speech_start_ts and (now - self.speech_start_ts) >= self.suspicious_seconds:
+                        audio_spike = True
+            
+            if self.callback:
+                self.callback({
+                    "audio_spike": audio_spike,
+                    "speech_probability": speech_prob,
+                    "speech_ratio": speech_ratio
+                })
+                
+            return (in_data, pyaudio.paContinue)
 
-
-class SimpleAudioAnalyzer:
-    """
-    Simple audio analyzer that works without real-time capture.
-    Analyzes audio files or pre-captured audio data.
-    """
-    
-    @staticmethod
-    def analyze_audio_file(file_path: str) -> dict:
-        """Analyze an audio file for suspicious patterns."""
         try:
-            # This would use scipy or librosa for proper analysis
-            # Placeholder implementation
-            return {
-                "has_speech": False,
-                "speech_duration_seconds": 0,
-                "estimated_speakers": 0,
-                "suspicious_patterns": []
-            }
+            self.stream = self.p.open(
+                format=pyaudio.paInt16,
+                channels=1,
+                rate=self.sample_rate,
+                input=True,
+                frames_per_buffer=self.chunk_size,
+                stream_callback=_audio_callback
+            )
+            self.stream.start_stream()
+            logger.info("Audio Monitor stream started")
         except Exception as e:
-            logger.error(f"Audio analysis error: {e}")
-            return {}
-    
-    @staticmethod
-    def compute_spectral_features(audio: np.ndarray, sample_rate: int) -> dict:
-        """Compute spectral features for audio classification."""
-        # Simplified spectral analysis
-        fft = np.fft.rfft(audio)
-        freqs = np.fft.rfftfreq(len(audio), 1 / sample_rate)
-        magnitude = np.abs(fft)
-        
-        # Find dominant frequency
-        dominant_idx = np.argmax(magnitude)
-        dominant_freq = freqs[dominant_idx]
-        
-        # Spectral centroid
-        spectral_centroid = np.sum(freqs * magnitude) / (np.sum(magnitude) + 1e-10)
-        
-        return {
-            "dominant_frequency": dominant_freq,
-            "spectral_centroid": spectral_centroid,
-            "total_energy": np.sum(magnitude ** 2)
-        }
+            logger.error(f"Failed to open audio stream: {e}")
+            self.running = False
 
+    def stop(self):
+        self.running = False
+        if self.stream:
+            try:
+                self.stream.stop_stream()
+                self.stream.close()
+            except:
+                pass
+            self.stream = None
+        if self.p:
+            try:
+                self.p.terminate()
+            except:
+                pass
+            self.p = None
+        logger.info("Audio Monitor stopped")
 
 # Global instance
 _monitor: Optional[AudioMonitor] = None
-
 
 def get_audio_monitor() -> AudioMonitor:
     """Get global audio monitor instance."""

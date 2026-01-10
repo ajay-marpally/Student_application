@@ -98,40 +98,46 @@ class FaceVerifier:
         Returns:
             True if reference loaded successfully
         """
-        try:
-            logger.info(f"Loading reference photo from: {photo_url}")
-            
-            # Download image
-            response = httpx.get(photo_url, timeout=30.0)
-            response.raise_for_status()
-            
-            # Convert to numpy array
-            image_array = np.frombuffer(response.content, dtype=np.uint8)
-            image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
-            
-            if image is None:
-                logger.error("Failed to decode reference image")
-                return False
-            
-            # Convert BGR to RGB for face_recognition
-            rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-            
-            # Extract face encoding
-            encodings = face_recognition.face_encodings(rgb_image)
-            
-            if not encodings:
-                logger.error("No face found in reference image")
-                return False
-            
-            self._reference_encoding = encodings[0]
-            self._reference_loaded = True
-            
-            logger.info("Reference face encoding loaded successfully")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load reference photo: {e}")
-            return False
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                logger.info(f"Loading reference photo from: {photo_url} (Attempt {attempt+1}/{max_retries})")
+                
+                # Download image
+                response = httpx.get(photo_url, timeout=30.0)
+                response.raise_for_status()
+                
+                # Convert to numpy array
+                image_array = np.frombuffer(response.content, dtype=np.uint8)
+                image = cv2.imdecode(image_array, cv2.IMREAD_COLOR)
+                
+                if image is None:
+                    logger.error("Failed to decode reference image")
+                    return False
+                
+                # Convert BGR to RGB for face_recognition
+                rgb_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                
+                # Extract face encoding
+                encodings = face_recognition.face_encodings(rgb_image)
+                
+                if not encodings:
+                    logger.error("No face found in reference image")
+                    return False
+                
+                self._reference_encoding = encodings[0]
+                self._reference_loaded = True
+                
+                logger.info("Reference face encoding loaded successfully")
+                return True
+                
+            except Exception as e:
+                logger.warning(f"Attempt {attempt+1} failed to load reference photo: {e}")
+                if attempt < max_retries - 1:
+                    time.sleep(2) # Wait before retry
+                else:
+                    logger.error(f"All {max_retries} attempts to load reference photo failed.")
+                    return False
     
     def load_reference_from_file(self, file_path: Path) -> bool:
         """

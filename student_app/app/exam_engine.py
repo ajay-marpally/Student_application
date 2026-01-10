@@ -79,8 +79,8 @@ class ExamEngine:
         self.classifier = get_event_classifier()
         self.queue = get_sqlite_queue()
         
-        # Set up classifier callback
-        self.classifier.on_violation = self._handle_violation
+        # Set up classifier listener (Observer pattern)
+        self.classifier.add_listener(self._handle_violation)
         
         self._lock = threading.Lock()
     

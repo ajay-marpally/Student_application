@@ -38,7 +38,7 @@ class SupabaseClient:
     # Writable tables
     WRITE_TABLES = {
         "exam_attempts", "answers", "malpractice_events", 
-        "evidence", "cctv_evidence", "audit_logs"
+        "evidence", "cctv_evidence", "audit_logs", "student_ai_analysis"
     }
     
     def __init__(self, config: Optional[SupabaseConfig] = None):
@@ -458,7 +458,6 @@ class SupabaseClient:
                 "entity": entity,
                 "entity_id": entity_id,
                 "actor_id": actor_id,
-                "evidence": evidence,
                 "ip_address": ip_address,
                 "created_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -472,27 +471,80 @@ class SupabaseClient:
             return True
             
         except Exception as e:
-            logger.error(f"Error creating audit log: {e}")
+            msg = f"Error creating audit log: {e}"
+            if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                msg += f" | Response: {e.response.text}"
+            logger.error(msg)
             return False
     
+    def log_ai_analysis(self, payload: Dict[str, Any]) -> Optional[str]:
+        """
+        Log AI analysis telemetry or incident to the staging table.
+        
+        Args:
+            payload: Row data matching student_ai_analysis schema
+            
+        Returns:
+            Created log ID, or None on failure
+        """
+        try:
+            url = self._rest_url("student_ai_analysis")
+            
+            response = self._client.post(
+                url,
+                json=payload,
+                headers=self._default_headers(use_service_key=True)
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            log_id = data[0]["id"]
+            logger.debug(f"Logged AI analysis: {log_id} ({payload.get('event_type')})")
+            return log_id
+            
+        except httpx.HTTPStatusError as e:
+            logger.error(f"HTTP Error logging AI analysis: {e.response.status_code} - {e.response.text}")
+            return None
+        except Exception as e:
+            logger.error(f"Error logging AI analysis: {e}")
+            return None
+
+    def update_ai_analysis(self, log_id: str, payload: Dict[str, Any]) -> bool:
+        """Update existing AI analysis record."""
+        try:
+            url = self._rest_url("student_ai_analysis")
+            params = {"id": f"eq.{log_id}"}
+            response = self._client.patch(
+                url,
+                params=params,
+                json=payload,
+                headers=self._default_headers(use_service_key=True)
+            )
+            response.raise_for_status()
+            return True
+        except Exception as e:
+            logger.error(f"Error updating AI analysis: {e}")
+            return False
+
     # ==================== STORAGE OPERATIONS ====================
     
     def upload_evidence_file(
         self,
         file_path: Path,
-        bucket: str = "evidence"
+        bucket: Optional[str] = None
     ) -> Optional[str]:
         """
         Upload an evidence file to Supabase Storage.
         
         Args:
             file_path: Local path to file
-            bucket: Storage bucket name
+            bucket: Storage bucket name (defaults to config)
             
         Returns:
             Public URL of uploaded file, or None on failure
         """
         try:
+            bucket = bucket or self.config.storage_bucket
             # Generate unique storage path
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             storage_path = f"{timestamp}_{file_path.name}"

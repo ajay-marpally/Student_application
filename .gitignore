@@ -25,6 +25,8 @@ venv/
 env/
 ENV/
 .venv/
+svenv/
+docs/
 
 # IDE
 .idea/
@@ -76,3 +78,7 @@ student_app/app/ai/models/*.caffemodel
 
 # Gemini artifacts (local only)
 .gemini/
+
+# Model Weights
+*.pt
+student_app/yolov8s.pt

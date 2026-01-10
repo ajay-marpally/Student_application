@@ -25,6 +25,7 @@ class AuthResult:
     exam_id: Optional[str] = None
     exam_name: Optional[str] = None
     exam_duration: Optional[int] = None
+    lab_id: Optional[str] = None
     student_name: Optional[str] = None
     hall_ticket: Optional[str] = None
     photo_url: Optional[str] = None  # Reference photo for face verification
@@ -141,6 +142,7 @@ class Authenticator:
                 exam_id=assignment["exam_id"],
                 exam_name=exam_data.get("name", "Exam"),
                 exam_duration=exam_data.get("duration_minutes", 60),
+                lab_id=student.get("lab_id"),
                 student_name=user_data.get("name", "Student"),
                 hall_ticket=hall_ticket,
                 photo_url=photo_url
@@ -167,8 +169,8 @@ class Authenticator:
             
             verifier = get_face_verifier()
             if not verifier:
-                logger.warning("Face verification not available")
-                return True, "Library missing", 0.0
+                logger.error("Face verification library is missing - Security bypass prevented")
+                return False, "Verification system unavailable", 1.0
                 
             # Load reference if not already loaded
             if not verifier.load_reference_from_url(photo_url):
