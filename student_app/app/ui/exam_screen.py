@@ -16,7 +16,12 @@ from PySide6.QtWidgets import (
 from collections import deque
 import cv2
 import numpy as np
-import mediapipe as mp
+try:
+    import mediapipe as mp
+    MP_AVAILABLE = True
+except ImportError:
+    mp = None
+    MP_AVAILABLE = False
 from PySide6.QtCore import Qt, Signal, QTimer, QThread
 
 logger = logging.getLogger(__name__)
@@ -95,7 +100,7 @@ class ProctorWorker(QThread):
             movement_threshold = 0.15
             
             try:
-                if hasattr(mp, 'solutions') and hasattr(mp.solutions, 'pose'):
+                if MP_AVAILABLE and hasattr(mp, 'solutions') and hasattr(mp.solutions, 'pose'):
                     pose_estimator = mp.solutions.pose.Pose(
                         min_detection_confidence=0.5,
                         min_tracking_confidence=0.5
