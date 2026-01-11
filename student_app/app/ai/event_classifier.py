@@ -110,12 +110,11 @@ class EventClassifier:
         """
         Initialize event classifier.
         """
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # Use RLock to allow nested acquisition
         self._listeners = []
         self.config = get_config().thresholds
         
-        # Event storage with thread-safe access
-        self._lock = threading.Lock()
+        # Event storage with thread-safe access (uses same _lock)
         
         # Time-windowed event queues
         self._events: Dict[EventType, deque] = {}

@@ -11,8 +11,8 @@ logger = logging.getLogger(__name__)
 
 from typing import Optional, Tuple, List
 from dataclasses import dataclass
-import mediapipe as mp
 try:
+    import mediapipe as mp
     try:
         import mediapipe.solutions.face_mesh as mp_face_mesh
     except (ImportError, AttributeError):
@@ -21,6 +21,7 @@ try:
     MP_AVAILABLE = True
 except (ImportError, AttributeError):
     MP_AVAILABLE = False
+    mp = None
     mp_face_mesh = None
 
 if not MP_AVAILABLE:

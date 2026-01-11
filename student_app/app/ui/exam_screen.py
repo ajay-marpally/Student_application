@@ -11,7 +11,6 @@ from typing import Optional, List, Dict, Any
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QFrame, QScrollArea, QButtonGroup, QRadioButton,
-    QFrame, QScrollArea, QButtonGroup, QRadioButton,
     QGridLayout, QMessageBox
 )
 from collections import deque
@@ -139,7 +138,8 @@ class ProctorWorker(QThread):
             def on_violation_listener(violation):
                 self.violation_detected.emit(violation.description, violation.severity)
             
-            classifier.add_listener(on_violation_listener)
+            if classifier is not None:
+                classifier.add_listener(on_violation_listener)
             
             # Open camera
             self.log_debug(f"Opening camera index {self.camera_index}...")
@@ -240,7 +240,7 @@ class ProctorWorker(QThread):
                         pass
 
                 # Object detection every 15th frame (roughly 1.5s)
-                if frame_count % 15 == 0:
+                if frame_count % 15 == 0 and object_detector is not None:
                     objects = object_detector.detect(frame)
                     for obj in objects:
                         telemetry["objects"].append({"label": obj.label, "conf": obj.confidence})
@@ -268,11 +268,15 @@ class ProctorWorker(QThread):
                         timestamp=now,
                         confidence=audio_data.get("speech_probability", 0.9)
                     )
-                    classifier.add_event(evt)
+                    if classifier is not None:
+                        classifier.add_event(evt)
                     frame_events.append(evt)
 
                 # Face detection
-                faces = face_detector.detect(frame)
+                if face_detector is not None:
+                    faces = face_detector.detect(frame)
+                else:
+                    faces = []
                 
                 if len(faces) == 0:
                     evt = DetectionEvent(
@@ -292,7 +296,8 @@ class ProctorWorker(QThread):
                     classifier.add_event(evt)
                     frame_events.append(evt)
                 else:
-                    classifier.reset_face_absent()
+                    if classifier is not None:
+                        classifier.reset_face_absent()
                 
                 # Head pose
                 try:
@@ -400,7 +405,8 @@ class ProctorWorker(QThread):
                      face_n = len(faces) if 'faces' in locals() else 0
                      self.log_debug(f"[STATUS] Head: {h_yaw:.0f}/{h_pitch:.0f} | Audio: {aud_prob:.2f} | Faces: {face_n} | Objects: {len(telemetry['objects'])}")
             
-            audio_monitor.stop()
+            if audio_monitor is not None:
+                audio_monitor.stop()
             cap.release()
             self.log_debug("Proctoring session ended normally")
         except Exception as e:
@@ -419,7 +425,8 @@ class ProctorWorker(QThread):
         # ALSO write to a dedicated debug log file
         try:
             # Use local logs folder in project directory
-            debug_log = Path("M:/students_app/Student_application/logs/proctor_debug.log")
+            from student_app.app.config import get_config
+            debug_log = get_config().data_dir / "proctor_debug.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
             with open(debug_log, "a", encoding="utf-8") as f:
                 f.write(f"[{datetime.now().isoformat()}] {message}\n")

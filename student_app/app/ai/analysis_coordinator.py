@@ -95,7 +95,7 @@ class AnalysisCoordinator:
         
         # ALSO write to the dedicated debug log file
         try:
-            debug_log = Path("M:/students_app/Student_application/logs/proctor_debug.log")
+            debug_log = self.config.data_dir / "proctor_debug.log"
             debug_log.parent.mkdir(parents=True, exist_ok=True)
             with open(debug_log, "a", encoding="utf-8") as f:
                 f.write(f"[{datetime.now().isoformat()}] {message}\n")
