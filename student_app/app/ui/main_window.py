@@ -132,7 +132,13 @@ class MainWindow(QMainWindow):
         if not self._exam_active:
             return
         
-        if not self.isActiveWindow():
+        is_focused = self.isActiveWindow()
+        
+        # Sync with ExamEngine status
+        from student_app.app.exam_engine import get_exam_engine
+        get_exam_engine().state.is_fullscreen = is_focused
+        
+        if not is_focused:
             logger.warning("Application lost focus during exam!")
             
             # Emit violation signal

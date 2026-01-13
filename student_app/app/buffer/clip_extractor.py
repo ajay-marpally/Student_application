@@ -28,6 +28,8 @@ class ExtractedClip:
     end_time: datetime
     duration_seconds: float
     frame_count: int
+    frame_start: int
+    frame_end: int
     hash_sha256: str
     file_size_bytes: int
     encoding_format: str = "mp4"
@@ -39,6 +41,8 @@ class ExtractedClip:
             "end_time": self.end_time.isoformat(),
             "duration_seconds": self.duration_seconds,
             "frame_count": self.frame_count,
+            "frame_start": self.frame_start,
+            "frame_end": self.frame_end,
             "hash_sha256": self.hash_sha256,
             "file_size_bytes": self.file_size_bytes,
             "encoding_format": self.encoding_format
@@ -56,7 +60,7 @@ class ClipExtractor:
     """
     
     # Encoding parameters
-    FOURCC_MP4 = cv2.VideoWriter_fourcc(*'mp4v')
+    FOURCC_MP4 = cv2.VideoWriter_fourcc(*'avc1')
     FOURCC_AVI = cv2.VideoWriter_fourcc(*'XVID')
     
     def __init__(
@@ -137,6 +141,8 @@ class ClipExtractor:
             end_time=actual_end,
             duration_seconds=duration,
             frame_count=len(frames),
+            frame_start=frames[0].frame_number,
+            frame_end=frames[-1].frame_number,
             hash_sha256=file_hash,
             file_size_bytes=file_size
         )

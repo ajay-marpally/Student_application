@@ -227,19 +227,8 @@ class Authenticator:
             }
         )
         
-        # Also log to Supabase if successful auth
-        try:
-            self.client.create_audit_log(
-                action="LOGIN_ATTEMPT",
-                entity="student",
-                evidence={
-                    "hall_ticket": hall_ticket,
-                    "success": success,
-                    "reason": reason
-                }
-            )
-        except Exception as e:
-            logger.warning(f"Failed to log to Supabase: {e}")
+        # Local file audit log only (Supabase audit_logs table not used)
+        pass
     
     def verify_clock_drift(self) -> Tuple[float, bool]:
         """

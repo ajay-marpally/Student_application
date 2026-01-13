@@ -38,7 +38,7 @@ class SupabaseClient:
     # Writable tables
     WRITE_TABLES = {
         "exam_attempts", "answers", "malpractice_events", 
-        "evidence", "cctv_evidence", "audit_logs"
+        "evidence", "cctv_evidence", "audit_logs", "student_ai_analysis"
     }
     
     def __init__(self, config: Optional[SupabaseConfig] = None):
@@ -57,6 +57,9 @@ class SupabaseClient:
         )
         
         self._async_client: Optional[httpx.AsyncClient] = None
+        
+        # Verify storage access on startup
+        self.verify_bucket_access("students_evidences")
     
     def _default_headers(self, use_service_key: bool = False) -> Dict[str, str]:
         """Get default headers for API requests."""
@@ -78,6 +81,30 @@ class SupabaseClient:
         if path:
             url += f"/{path}"
         return url
+    
+    def verify_bucket_access(self, bucket: str) -> bool:
+        """Verify that the API key has access to the storage bucket."""
+        try:
+            # First, check if we can even see the bucket metadata (requires service key)
+            url = f"{self.base_url}/storage/v1/bucket/{bucket}"
+            response = self._client.get(
+                url, 
+                headers=self._default_headers(use_service_key=True)
+            )
+            
+            if response.status_code == 200:
+                logger.info(f"✅ [STORAGE OK] Connected to bucket: '{bucket}'")
+                return True
+            elif response.status_code == 404:
+                logger.error(f"❌ [STORAGE ERROR] Bucket '{bucket}' not found. Please ensure it exists in Supabase.")
+                return False
+            else:
+                # 401/403/400 might mean bucket exists but we can't see its metadata with the current key
+                logger.warning(f"⚠️ [STORAGE WARNING] Could not verify metadata for '{bucket}' ({response.status_code}). This is often due to missing SUPABASE_SERVICE_KEY. Uploads may still work if policies are set.")
+                return True # Don't block app if metadata check fails but bucket might exist
+        except Exception as e:
+            logger.error(f"❌ [STORAGE ERROR] Could not connect to storage: {e}")
+            return False
     
     # ==================== READ OPERATIONS ====================
     
@@ -427,6 +454,39 @@ class SupabaseClient:
             logger.error(f"Error creating evidence: {e}")
             return None
     
+    def create_ai_analysis_record(self, data: Dict[str, Any]) -> Optional[str]:
+        """
+        Create a comprehensive AI analysis record in student_ai_analysis.
+        
+        Args:
+            data: Dictionary containing all record fields
+            
+        Returns:
+            Created record ID, or None on failure
+        """
+        try:
+            url = self._rest_url("student_ai_analysis")
+            
+            # Ensure required fields and timestamp
+            if "occurred_at" not in data:
+                data["occurred_at"] = datetime.now(timezone.utc).isoformat()
+            
+            response = self._client.post(
+                url,
+                json=data,
+                headers=self._default_headers(use_service_key=True)
+            )
+            response.raise_for_status()
+            
+            resp_data = response.json()
+            record_id = resp_data[0]["id"]
+            logger.info(f"Created student_ai_analysis record: {record_id}")
+            return record_id
+            
+        except Exception as e:
+            logger.error(f"Error creating AI analysis record: {e}")
+            return None
+
     def create_audit_log(
         self,
         action: str,
@@ -480,7 +540,7 @@ class SupabaseClient:
     def upload_evidence_file(
         self,
         file_path: Path,
-        bucket: str = "evidence"
+        bucket: Optional[str] = None
     ) -> Optional[str]:
         """
         Upload an evidence file to Supabase Storage.
@@ -493,6 +553,9 @@ class SupabaseClient:
             Public URL of uploaded file, or None on failure
         """
         try:
+            if bucket is None:
+                bucket = self.config.storage_bucket
+            
             # Generate unique storage path
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             storage_path = f"{timestamp}_{file_path.name}"

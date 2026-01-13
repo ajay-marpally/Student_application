@@ -5,6 +5,7 @@ MCQ exam interface with question navigation and auto-save.
 """
 
 import logging
+import time
 from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 from PySide6.QtWidgets import (
@@ -29,136 +30,151 @@ class ProctorWorker(QThread):
         self._running = False
     
     def run(self):
-        """Main proctoring loop."""
+        """Main proctoring loop using Advanced AI Engine (10 FPS)."""
         import cv2
-        from student_app.app.ai import (
-            get_face_detector, get_head_pose_estimator, 
-            get_gaze_tracker, get_event_classifier,
-            get_face_verifier, is_face_verification_available
+        import time
+        from datetime import datetime
+        from student_app.app.ai.advanced import (
+            AdvancedVisualDetector, AdvancedAudioMonitor, 
+            AdvancedRuleEngine, AdvancedHybridVerifier
         )
-        from student_app.app.ai.event_classifier import DetectionEvent, EventType
+        from student_app.app.ai import get_face_verifier, is_face_verification_available
         from student_app.app.buffer import get_circular_buffer
+        from student_app.app.exam_engine import get_exam_engine
         
         self._running = True
         
-        # Initialize components
-        face_detector = get_face_detector()
-        head_pose = get_head_pose_estimator()
-        gaze_tracker = get_gaze_tracker()
-        classifier = get_event_classifier()
+        # 1. Initialize Advanced Components
+        detector = AdvancedVisualDetector()
+        engine = AdvancedRuleEngine()
         buffer = get_circular_buffer()
+        exam_engine = get_exam_engine()
         
-        # Initialize face verifier if available
+        # 2. Audio Monitoring (Silero VAD)
+        self.audio_data = {"audio_spike": False}
+        def audio_callback(data):
+            self.audio_data = data
+        
+        audio_monitor = None
+        try:
+            audio_monitor = AdvancedAudioMonitor(audio_callback)
+            audio_monitor.start()
+        except Exception as e:
+            logger.error(f"Failed to start audio monitoring: {e}")
+        
+        # 3. Biometric Verification (Maintain existing logic)
         face_verifier = None
-        if is_face_verification_available() and self.photo_url:
-            face_verifier = get_face_verifier()
-            if face_verifier and self.photo_url:
-                if not face_verifier.load_reference_from_url(self.photo_url):
-                    logger.warning("Could not load reference photo for face verification")
+        try:
+            if is_face_verification_available() and self.photo_url:
+                face_verifier = get_face_verifier()
+                if face_verifier and not face_verifier.load_reference_from_url(self.photo_url):
+                    logger.warning("Could not load reference photo for impersonation check")
                     face_verifier = None
+        except Exception as e:
+            logger.error(f"Failed to initialize face verifier: {e}")
         
-        # Setup violation callback
-        def on_violation(violation):
-            self.violation_detected.emit(violation.description, violation.severity)
-        classifier.on_violation = on_violation
-        
-        # Open camera
+        # 4. Open Camera
         cap = cv2.VideoCapture(self.camera_index)
         if not cap.isOpened():
-            logger.error("Could not open camera for proctoring")
+            logger.error(f"Could not open camera {self.camera_index} for proctoring")
+            if audio_monitor:
+                audio_monitor.stop()
             return
+            
+        logger.info(f"Advanced Proctoring started at 10 FPS on camera {self.camera_index}")
         
-        logger.info("Proctoring started")
-        
+        last_frame_time = 0
+        frame_interval = 0.1 # 10 FPS
         frame_count = 0
-        while self._running:
-            ret, frame = cap.read()
-            if not ret:
-                continue
-            
-            frame_count += 1
-            now = datetime.now()
-            
-            # Add frame to buffer
-            buffer.add_frame(frame, now)
-            
-            # Process every 3rd frame for performance
-            if frame_count % 3 != 0:
-                continue
-            
-            # Face detection
-            faces = face_detector.detect(frame)
-            
-            if len(faces) == 0:
-                classifier.add_event(DetectionEvent(
-                    event_type=EventType.FACE_ABSENT,
-                    timestamp=now,
-                    confidence=0.9
-                ))
-            elif len(faces) > 1:
-                classifier.add_event(DetectionEvent(
-                    event_type=EventType.FACE_MULTIPLE,
-                    timestamp=now,
-                    confidence=0.9,
-                    details={"count": len(faces)}
-                ))
-            else:
-                classifier.reset_face_absent()
-            
-            # Head pose
-            pose = head_pose.estimate(frame)
-            if pose:
-                if pose.is_looking_left():
-                    classifier.add_event(DetectionEvent(
-                        event_type=EventType.HEAD_LEFT,
-                        timestamp=now,
-                        confidence=pose.confidence,
-                        details={"yaw": pose.yaw}
-                    ))
-                elif pose.is_looking_right():
-                    classifier.add_event(DetectionEvent(
-                        event_type=EventType.HEAD_RIGHT,
-                        timestamp=now,
-                        confidence=pose.confidence,
-                        details={"yaw": pose.yaw}
-                    ))
-            
-            # Gaze tracking
-            gaze = gaze_tracker.track(frame)
-            if gaze and gaze.is_looking_away():
-                classifier.add_event(DetectionEvent(
-                    event_type=EventType.GAZE_AWAY,
-                    timestamp=now,
-                    confidence=gaze.confidence
-                ))
-            else:
-                classifier.reset_gaze_tracking()
-            
-            # Face verification (check every 10th frame for performance)
-            if face_verifier and frame_count % 10 == 0:
-                result = face_verifier.verify(frame)
-                
-                # Check if we should alert based on consecutive mismatches
-                should_alert, alert_reason = face_verifier.should_alert()
-                
-                if should_alert:
-                    stats = face_verifier.get_stats()
-                    classifier.add_event(DetectionEvent(
-                        event_type=EventType.IMPERSONATION,
-                        timestamp=now,
-                        confidence=1.0 - result.similarity,
-                        details={
-                            "similarity": result.similarity,
-                            "distance": result.distance,
-                            "consecutive_mismatches": stats["consecutive_mismatches"],
-                            "reason": alert_reason
-                        }
-                    ))
-                    # Reset tracking after alert to avoid spam
-                    face_verifier.reset_tracking()
         
-        cap.release()
-        logger.info("Proctoring stopped")
+        try:
+            while self._running:
+                now_ts = time.time()
+                
+                # Maintain 10 FPS processing rate
+                if now_ts - last_frame_time < frame_interval:
+                    time.sleep(0.01)
+                    continue
+                last_frame_time = now_ts
+                
+                ret, frame = cap.read()
+                if not ret:
+                    continue
+                
+                frame_count += 1
+                now_dt = datetime.now()
+                
+                # Add to rolling buffer
+                buffer.add_frame(frame, now_dt)
+                
+                # 5. Advanced Visual Analysis (YOLO + MediaPipe)
+                visual_data = detector.process_frame(frame)
+                
+                # 6. Combine with Audio and Focus Data
+                # (Focus loss is checked by ExamEngine/MainWindow, we get it from state)
+                focus_loss = not exam_engine.state.is_fullscreen # Simple proxy
+                
+                detection_payload = {
+                    **visual_data,
+                    "audio_spike": self.audio_data.get("audio_spike", False),
+                    "focus_loss": focus_loss
+                }
+
+                # Explicit Logging for Visibility
+                if frame_count % 50 == 0:
+                    logger.info(f"AI: Heartbeat - analyzing at 10 FPS (Processed {frame_count} frames)")
+                    
+                    # Periodic summary of detections (even if not violations)
+                    if frame_count % 100 == 0:
+                        status = "Normal"
+                        if not visual_data.get("face_present"): status = "Candidate Absent"
+                        elif visual_data.get("multiple_faces"): status = "Multiple Faces"
+                        elif visual_data.get("gaze_deviation"): status = "Looking Away"
+                        logger.info(f"AI: Status Summary - {status}")
+                
+                if visual_data.get("phone_detected"): logger.info("AI: Phone detected (Verifying...)")
+                if visual_data.get("book_detected"): logger.info("AI: Book detected (Verifying...)")
+                if visual_data.get("suspicious_object"): logger.info("AI: Secondary device detected (Verifying...)")
+                
+                # 7. Rule Engine & Risk Scoring
+                result = engine.process_detection(detection_payload, frame)
+                
+                # 8. Biometric Impersonation Check (Every 10 frames)
+                if face_verifier and frame_count % 10 == 0:
+                    face_verifier.verify(frame)
+                    should_alert, reason = face_verifier.should_alert()
+                    if should_alert:
+                        result["violations"].append({
+                            "type": "impersonation_suspected",
+                            "level": 5,
+                            "message": f"CRITICAL: {reason}"
+                        })
+                        result["current_risk"] = max(result["current_risk"], 100)
+                        result["risk_level"] = "critical"
+                        face_verifier.reset_tracking()
+
+                # 9. Handle Evidence Capture Trigger (Consolidated)
+                clip = None
+                if result.get("trigger_evidence"):
+                    clip = exam_engine.trigger_evidence_capture(result)
+
+                # 10. Feed Results back to ExamEngine for DB Logging
+                if result["violations"]:
+                    for v in result["violations"]:
+                        # Sync with ExamEngine's event system
+                        # Pass the captured clip to merge violation and evidence records
+                        exam_engine.process_advanced_violation(v, result, detection_payload, clip=clip)
+                        
+                        # Emit signal for UI warning overlays
+                        if v.get("level", 0) >= 4:
+                            self.violation_detected.emit(v["message"], v["level"])
+        
+        except Exception as e:
+            logger.error(f"Critical error in proctoring loop: {e}")
+        finally:
+            audio_monitor.stop()
+            cap.release()
+            logger.info("Proctoring stopped")
     
     def stop(self):
         """Stop the proctoring loop."""
@@ -406,26 +422,29 @@ class ExamScreen(QWidget):
         """Start the exam session."""
         logger.info("Starting exam")
         
-        # Create exam attempt
-        from student_app.app.storage.supabase_client import get_supabase_client
-        client = get_supabase_client()
+        # Get exam engine and set its state FIRST
+        from student_app.app.exam_engine import get_exam_engine
+        exam_engine = get_exam_engine()
         
-        import hashlib
-        import platform
-        fingerprint = hashlib.sha256(
-            f"{platform.node()}-{platform.machine()}".encode()
-        ).hexdigest()[:32]
+        # Populate engine state with student/exam data
+        exam_engine.state.student_id = self.student_data["student_id"]
+        exam_engine.state.exam_id = self.student_data["exam_id"]
+        exam_engine.state.student_name = self.student_data.get("student_name", "")
+        exam_engine.state.hall_ticket = self.student_data.get("hall_ticket", "")
+        exam_engine.state.lab_id = self.student_data.get("lab_id")
         
-        attempt = client.create_exam_attempt(
-            student_id=self.student_data["student_id"],
-            exam_id=self.student_data["exam_id"],
-            system_fingerprint=fingerprint
-        )
+        # Now start exam (creates attempt, starts uploader)
+        if not exam_engine.start_exam():
+            logger.error("Failed to start exam via ExamEngine")
+            return
         
-        if attempt:
-            self.attempt_id = attempt["id"]
+        # Store attempt_id from engine
+        self.attempt_id = exam_engine.state.attempt_id
+        logger.info(f"Exam started with attempt_id: {self.attempt_id}")
         
         # Fetch questions
+        from student_app.app.storage.supabase_client import get_supabase_client
+        client = get_supabase_client()
         self.questions = client.get_exam_questions(self.student_data["exam_id"])
         
         if not self.questions:
@@ -656,13 +675,9 @@ class ExamScreen(QWidget):
         # Record malpractice event
         if self.attempt_id:
             from student_app.app.storage.supabase_client import get_supabase_client
-            client = get_supabase_client()
-            client.create_malpractice_event(
-                attempt_id=self.attempt_id,
-                event_type=message.replace(" ", "_").lower(),
-                severity=severity,
-                description=message
-            )
+            
+            # All violations now go through process_advanced_violation
+            # which logs to student_ai_analysis table via queue
         
         # Show warning for severe violations
         if severity >= 8:

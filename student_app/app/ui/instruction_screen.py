@@ -117,7 +117,7 @@ class InstructionScreen(QWidget):
         countdown_label.setAlignment(Qt.AlignCenter)
         countdown_inner.addWidget(countdown_label)
         
-        self.countdown_display = QLabel("5:00")
+        self.countdown_display = QLabel("1:00")
         self.countdown_display.setStyleSheet("""
             color: #4da6ff; 
             font-size: 48px; 

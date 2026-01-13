@@ -137,14 +137,18 @@ class BackgroundUploader:
     
     def start(self):
         """Start background upload service."""
-        if self._running:
-            return
-        
-        self._running = True
-        self._thread = threading.Thread(target=self._upload_loop, daemon=True)
-        self._thread.start()
-        
-        logger.info("Background uploader started")
+        try:
+            if self._running:
+                logger.warning("Background uploader already running")
+                return
+            
+            self._running = True
+            self._thread = threading.Thread(target=self._upload_loop, daemon=True)
+            self._thread.start()
+            
+            logger.info("✅ Background uploader started successfully")
+        except Exception as e:
+            logger.error(f"❌ CRITICAL: Failed to start background uploader: {e}", exc_info=True)
     
     def stop(self):
         """Stop background upload service."""
@@ -158,6 +162,7 @@ class BackgroundUploader:
     
     def _upload_loop(self):
         """Main upload loop."""
+        logger.info("📤 Upload loop thread started")
         while self._running:
             try:
                 # Get next pending item
@@ -175,6 +180,7 @@ class BackgroundUploader:
                     continue
                 
                 # Process item
+                logger.info(f"📤 Processing queue item {item.id} for table: {item.table_name}")
                 success = self._upload_item(item)
                 
                 if success:
@@ -199,6 +205,8 @@ class BackgroundUploader:
             except Exception as e:
                 logger.error(f"Upload loop error: {e}")
                 time.sleep(5.0)
+        
+        logger.info("📤 Upload loop thread stopped")
     
     def _upload_item(self, item: QueueItem) -> bool:
         """
@@ -213,22 +221,24 @@ class BackgroundUploader:
         try:
             logger.debug(f"Uploading item {item.id} to {item.table_name}")
             
-            # Handle file upload if present
+            # Handle file upload            
+            # Initialize storage_url
             storage_url = None
+            
+            # If there's a file to upload
             if item.file_path:
                 file_path = Path(item.file_path)
                 
                 if not file_path.exists():
-                    error = f"File not found: {item.file_path}"
-                    logger.error(error)
+                    error = f"File not found: {file_path}"
                     self.queue.mark_failed(item.id, error)
                     return False
                 
-                # Verify integrity
-                actual_hash = self._compute_hash(file_path)
-                if actual_hash != item.hash_sha256:
-                    error = "File integrity check failed"
-                    logger.error(f"{error}: expected {item.hash_sha256}, got {actual_hash}")
+                # Verify file integrity
+                computed_hash = self._compute_hash(file_path)
+                if computed_hash != item.hash_sha256:
+                    error = f"File integrity check failed: expected {item.hash_sha256}, got {computed_hash}"
+                    logger.error(error)
                     self.queue.mark_failed(item.id, error)
                     return False
                 
@@ -249,16 +259,15 @@ class BackgroundUploader:
             success = self._insert_record(item.table_name, payload)
             
             if not success:
-                error = "Database insert failed"
-                self.queue.mark_failed(item.id, error)
+                logger.error(f"❌ [FAILURE] Supabase sync failed for {item.table_name} (Item: {item.id})")
                 return False
             
-            logger.info(f"Successfully uploaded item {item.id}")
+            logger.info(f"✅ [SUCCESS] Supabase sync complete for {item.table_name} (Item: {item.id})")
             return True
             
         except Exception as e:
             error = str(e)
-            logger.error(f"Upload error for item {item.id}: {error}")
+            logger.error(f"❌ [CRITICAL ERROR] Upload failed for item {item.id}: {error}")
             self.queue.mark_failed(item.id, error)
             return False
     
@@ -273,7 +282,7 @@ class BackgroundUploader:
         return sha256.hexdigest()
     
     def _insert_record(self, table_name: str, payload: dict) -> bool:
-        """Insert a record into Supabase."""
+        """Insert a record into Supabase with transparent error logging."""
         try:
             import httpx
             
@@ -281,12 +290,15 @@ class BackgroundUploader:
             headers = self.client._default_headers(use_service_key=True)
             
             response = httpx.post(url, json=payload, headers=headers, timeout=30.0)
-            response.raise_for_status()
             
+            if response.is_error:
+                logger.error(f"❌ [DB ERROR] {response.status_code} - {response.text}")
+                return False
+                
             return True
             
         except Exception as e:
-            logger.error(f"Insert error: {e}")
+            logger.error(f"❌ [CONNECTION ERROR] Failed to connect to Supabase: {e}")
             return False
     
     def upload_now(self, item: QueueItem) -> bool:

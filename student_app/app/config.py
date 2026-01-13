@@ -43,11 +43,11 @@ class ThresholdConfig:
     # Evidence
     CLIP_UPLOAD_MIN_CONFIDENCE: float = 0.6
     BUFFER_MINUTES: int = 10
-    CLIP_PADDING_SECONDS: float = 5.0
+    CLIP_PADDING_SECONDS: float = 10.0
     
     # UI
     AUTOSAVE_INTERVAL_SECONDS: int = 30
-    INSTRUCTION_DURATION_MINUTES: int = 5
+    INSTRUCTION_DURATION_MINUTES: int = 1
     
     # Windows
     WINDOW_CHECK_INTERVAL_MS: int = 500
@@ -59,7 +59,7 @@ class SupabaseConfig:
     url: str = ""
     key: str = ""
     service_key: str = ""  # For admin operations
-    storage_bucket: str = "evidence"
+    storage_bucket: str = "students_evidences"
 
 
 @dataclass
@@ -97,7 +97,10 @@ class ConfigManager:
     def _load_environment(self):
         """Load configuration from environment variables"""
         from dotenv import load_dotenv
-        load_dotenv()
+        # Explicitly load from root to handle different execution contexts
+        root_dir = Path(__file__).parent.parent.parent
+        env_path = root_dir / ".env"
+        load_dotenv(dotenv_path=env_path)
         
         # Supabase
         self.config.supabase.url = os.getenv(
@@ -109,6 +112,7 @@ class ConfigManager:
             os.getenv("NEXT_PUBLIC_SUPABASE_PUBLISHABLE_DEFAULT_KEY", "")
         )
         self.config.supabase.service_key = os.getenv("SUPABASE_SERVICE_KEY", "")
+        self.config.supabase.storage_bucket = os.getenv("STORAGE_BUCKET", "students_evidences")
         
         # Debug mode
         self.config.debug_mode = os.getenv("DEBUG", "false").lower() == "true"
